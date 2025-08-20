@@ -1,0 +1,133 @@
+name: S&P 500 Heatmap (Finviz)
+
+on:
+  # Fire around 21:15 UTC (EDT) and 20:15 UTC (EST), with backups to handle delays
+  schedule:
+    - cron: "15 20 * * 1-5"
+    - cron: "20 20 * * 1-5"
+    - cron: "25 20 * * 1-5"
+    - cron: "15 21 * * 1-5"
+    - cron: "20 21 * * 1-5"
+    - cron: "25 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sp500-heatmap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log current time
+        run: |
+          echo "UTC now:      $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "New York now: $(TZ='America/New_York' date '+%Y-%m-%d %H:%M:%S %Z')"
+
+      - name: Proceed only if Mon–Fri and 16:15–16:25 in New York
+        run: |
+          NY_DOW=$(TZ="America/New_York" date +'%u')   # 1=Mon..5=Fri
+          NY_HOUR=$(TZ="America/New_York" date +'%H')
+          NY_MIN=$(TZ="America/New_York" date +'%M')
+          echo "NY time detected: DOW=${NY_DOW} ${NY_HOUR}:${NY_MIN}"
+          if [ "$NY_DOW" -lt 1 ] || [ "$NY_DOW" -gt 5 ]; then
+            echo "Weekend — skipping."
+            exit 0
+          fi
+          if [ "$NY_HOUR" != "16" ] || [ "$NY_MIN" -lt 15 ] || [ "$NY_MIN" -gt 25 ]; then
+            echo "Outside 16:15–16:25 ET window — skipping."
+            exit 0
+          fi
+
+      # Prevent double posting within the same trading day
+      - name: Set date key
+        run: echo "DATE_NY=$(TZ='America/New_York' date +%Y-%m-%d)" >> $GITHUB_ENV
+
+      - name: Restore 'posted today' cache
+        id: posted_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .post-cache-heatmap
+          key: sp500-posted-${{ env.DATE_NY }}
+
+      - name: Skip if already posted today
+        if: steps.posted_cache.outputs.cache-hit == 'true'
+        run: |
+          echo "Already posted for ${DATE_NY}. Skipping."
+          exit 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          echo "playwright" > requirements.txt
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run heatmap script
+        run: python screenshot_sp500_heatmap.py
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Mark posted today
+        run: |
+          mkdir -p .post-cache-heatmap
+          echo "posted $(date -u)" > .post-cache-heatmap/posted.txt
+
+      - name: Save 'posted today' cache
+        uses: actions/cache/save@v4
+        with:
+          path: .post-cache-heatmap
+          key: sp500-posted-${{ env.DATE_NY }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  notify-slack:
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+    steps:
+      - name: Post SP500 Heatmap to Slack
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY##*/}"
+          BASE_URL="https://${OWNER}.github.io/${REPO}"
+          HEAT_URL="${BASE_URL}/sp500_heatmap.png"
+
+          cat > payload.json <<'JSON'
+          {
+            "text": "S&P 500 Heatmap — For internal use only",
+            "attachments": [
+              { "title": "SP500 Heatmap (Finviz, 4:15pm ET)", "image_url": "__HEAT_URL__" }
+            ]
+          }
+          JSON
+
+          sed -i "s|__HEAT_URL__|${HEAT_URL}|g" payload.json
+
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data @payload.json \
+            "${SLACK_WEBHOOK}"
