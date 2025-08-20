@@ -1,7 +1,7 @@
 name: S&P 500 Heatmap (Finviz)
 
 on:
-  # Fire around 21:15 UTC (EDT) and 20:15 UTC (EST), with backups to handle delays
+  # Fire around the ET 16:15 window in both EST (20:15 UTC) and EDT (21:15 UTC), with backups
   schedule:
     - cron: "15 20 * * 1-5"
     - cron: "20 20 * * 1-5"
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log current time
+      - name: Log current time (UTC & New York)
         run: |
           echo "UTC now:      $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
           echo "New York now: $(TZ='America/New_York' date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -47,11 +47,88 @@ jobs:
             echo "Outside 16:15–16:25 ET window — skipping."
             exit 0
           fi
+          echo "Within time window; continuing."
 
-      # Prevent double posting within the same trading day
-      - name: Set date key
+      # === NYSE Holiday Gate (skip US market holidays) ===
+      - name: Set New York date env
         run: echo "DATE_NY=$(TZ='America/New_York' date +%Y-%m-%d)" >> $GITHUB_ENV
 
+      - name: Skip if NYSE holiday (US market closed)
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import date, timedelta
+
+          def nth_weekday(year, month, weekday, n):
+              # weekday: Mon=0..Sun=6
+              d = date(year, month, 1)
+              while d.weekday() != weekday:
+                  d += timedelta(days=1)
+              return d + timedelta(days=7*(n-1))
+
+          def last_weekday(year, month, weekday):
+              if month < 12:
+                  d = date(year, month+1, 1) - timedelta(days=1)
+              else:
+                  d = date(year, 12, 31)
+              while d.weekday() != weekday:
+                  d -= timedelta(days=1)
+              return d
+
+          def easter_date(year):
+              # Anonymous Gregorian algorithm
+              a = year % 19
+              b = year // 100
+              c = year % 100
+              d = b // 4
+              e = b % 4
+              f = (b + 8) // 25
+              g = (b - f + 1) // 3
+              h = (19*a + b - d - g + 15) % 30
+              i = c // 4
+              k = c % 4
+              l = (32 + 2*e + 2*i - h - k) % 7
+              m = (a + 11*h + 22*l) // 451
+              month = (h + l - 7*m + 114) // 31
+              day = ((h + l - 7*m + 114) % 31) + 1
+              return date(year, month, day)
+
+          def observed(dt):
+              # NYSE observes Saturday holidays on Friday, Sunday holidays on Monday
+              if dt.weekday() == 5:  # Sat
+                  return dt - timedelta(days=1)
+              if dt.weekday() == 6:  # Sun
+                  return dt + timedelta(days=1)
+              return dt
+
+          def is_nyse_holiday(dt):
+              y = dt.year
+              hol = set()
+              hol.add(observed(date(y, 1, 1)))              # New Year's Day
+              hol.add(nth_weekday(y, 1, 0, 3))              # Martin Luther King Jr. Day (3rd Mon Jan)
+              hol.add(nth_weekday(y, 2, 0, 3))              # Presidents' Day (3rd Mon Feb)
+              hol.add(easter_date(y) - timedelta(days=2))   # Good Friday
+              hol.add(last_weekday(y, 5, 0))                # Memorial Day (last Mon May)
+              if y >= 2021:
+                  hol.add(observed(date(y, 6, 19)))         # Juneteenth
+              hol.add(observed(date(y, 7, 4)))              # Independence Day
+              hol.add(nth_weekday(y, 9, 0, 1))              # Labor Day (1st Mon Sep)
+              hol.add(nth_weekday(y, 11, 3, 4))             # Thanksgiving (4th Thu Nov)
+              hol.add(observed(date(y, 12, 25)))            # Christmas Day
+              return dt in hol
+
+          date_str = os.environ["DATE_NY"]
+          y, m, d = map(int, date_str.split("-"))
+          today = date(y, m, d)
+
+          if is_nyse_holiday(today):
+              print(f"{today} is an NYSE holiday — skipping.")
+              raise SystemExit(0)
+          else:
+              print(f"{today} is not an NYSE holiday — continuing.")
+          PY
+
+      # === Prevent double posting on the same trading day ===
       - name: Restore 'posted today' cache
         id: posted_cache
         uses: actions/cache/restore@v4
