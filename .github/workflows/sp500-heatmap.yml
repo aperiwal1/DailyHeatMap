@@ -1,14 +1,9 @@
 name: S&P 500 Heatmap (Finviz)
 
 on:
-  # Fire around the ET 16:15 window in both EST (20:15 UTC) and EDT (21:15 UTC), with backups
+  # Single trigger, 15 minutes earlier than the old first run (20:15 UTC → 20:00 UTC)
   schedule:
-    - cron: "15 20 * * 1-5"
-    - cron: "20 20 * * 1-5"
-    - cron: "25 20 * * 1-5"
-    - cron: "15 21 * * 1-5"
-    - cron: "20 21 * * 1-5"
-    - cron: "25 21 * * 1-5"
+    - cron: "0 20 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -33,7 +28,7 @@ jobs:
           echo "UTC now:      $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
           echo "New York now: $(TZ='America/New_York' date '+%Y-%m-%d %H:%M:%S %Z')"
 
-      - name: Proceed only if Mon–Fri and 16:15–16:25 in New York
+      - name: Proceed only if Mon–Fri and 16:00–16:10 in New York
         run: |
           NY_DOW=$(TZ="America/New_York" date +'%u')   # 1=Mon..5=Fri
           NY_HOUR=$(TZ="America/New_York" date +'%H')
@@ -43,8 +38,8 @@ jobs:
             echo "Weekend — skipping."
             exit 0
           fi
-          if [ "$NY_HOUR" != "16" ] || [ "$NY_MIN" -lt 15 ] || [ "$NY_MIN" -gt 25 ]; then
-            echo "Outside 16:15–16:25 ET window — skipping."
+          if [ "$NY_HOUR" != "16" ] || [ "$NY_MIN" -lt 0 ] || [ "$NY_MIN" -gt 10 ]; then
+            echo "Outside 16:00–16:10 ET window — skipping."
             exit 0
           fi
           echo "Within time window; continuing."
@@ -60,7 +55,6 @@ jobs:
           from datetime import date, timedelta
 
           def nth_weekday(year, month, weekday, n):
-              # weekday: Mon=0..Sun=6
               d = date(year, month, 1)
               while d.weekday() != weekday:
                   d += timedelta(days=1)
@@ -76,7 +70,6 @@ jobs:
               return d
 
           def easter_date(year):
-              # Anonymous Gregorian algorithm
               a = year % 19
               b = year // 100
               c = year % 100
@@ -94,7 +87,6 @@ jobs:
               return date(year, month, day)
 
           def observed(dt):
-              # NYSE observes Saturday holidays on Friday, Sunday holidays on Monday
               if dt.weekday() == 5:  # Sat
                   return dt - timedelta(days=1)
               if dt.weekday() == 6:  # Sun
@@ -104,17 +96,17 @@ jobs:
           def is_nyse_holiday(dt):
               y = dt.year
               hol = set()
-              hol.add(observed(date(y, 1, 1)))              # New Year's Day
-              hol.add(nth_weekday(y, 1, 0, 3))              # Martin Luther King Jr. Day (3rd Mon Jan)
-              hol.add(nth_weekday(y, 2, 0, 3))              # Presidents' Day (3rd Mon Feb)
-              hol.add(easter_date(y) - timedelta(days=2))   # Good Friday
-              hol.add(last_weekday(y, 5, 0))                # Memorial Day (last Mon May)
+              hol.add(observed(date(y, 1, 1)))
+              hol.add(nth_weekday(y, 1, 0, 3))            # MLK (3rd Mon Jan)
+              hol.add(nth_weekday(y, 2, 0, 3))            # Presidents' Day (3rd Mon Feb)
+              hol.add(easter_date(y) - timedelta(days=2)) # Good Friday
+              hol.add(last_weekday(y, 5, 0))              # Memorial Day (last Mon May)
               if y >= 2021:
-                  hol.add(observed(date(y, 6, 19)))         # Juneteenth
-              hol.add(observed(date(y, 7, 4)))              # Independence Day
-              hol.add(nth_weekday(y, 9, 0, 1))              # Labor Day (1st Mon Sep)
-              hol.add(nth_weekday(y, 11, 3, 4))             # Thanksgiving (4th Thu Nov)
-              hol.add(observed(date(y, 12, 25)))            # Christmas Day
+                  hol.add(observed(date(y, 6, 19)))       # Juneteenth
+              hol.add(observed(date(y, 7, 4)))            # Independence Day
+              hol.add(nth_weekday(y, 9, 0, 1))            # Labor Day (1st Mon Sep)
+              hol.add(nth_weekday(y, 11, 3, 4))           # Thanksgiving (4th Thu Nov)
+              hol.add(observed(date(y, 12, 25)))          # Christmas Day
               return dt in hol
 
           date_str = os.environ["DATE_NY"]
@@ -198,13 +190,13 @@ jobs:
           {
             "text": "S&P 500 Heatmap — For internal use only",
             "attachments": [
-              { "title": "SP500 Heatmap (Finviz, 4:15pm ET)", "image_url": "__HEAT_URL__" }
+              { "title": "SP500 Heatmap (4:00pm ET)", "image_url": "__HEAT_URL__" }
             ]
           }
           JSON
 
           sed -i "s|__HEAT_URL__|${HEAT_URL}|g" payload.json
 
-          curl -sS -X POST -H 'Content-type: application/json' \
+          curl -sS --max-time 20 -X POST -H 'Content-type: application/json' \
             --data @payload.json \
             "${SLACK_WEBHOOK}"
