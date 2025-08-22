@@ -179,18 +179,20 @@ jobs:
     env:
       SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
     steps:
-      - name: Post SP500 Heatmap to Slack
+      - name: Post SP500 Heatmap to Slack (date-stamped URL)
         run: |
           OWNER="${GITHUB_REPOSITORY%%/*}"
           REPO="${GITHUB_REPOSITORY##*/}"
           BASE_URL="https://${OWNER}.github.io/${REPO}"
-          HEAT_URL="${BASE_URL}/sp500_heatmap.png"
+
+          DATE_NY=$(TZ='America/New_York' date +%Y-%m-%d)
+          HEAT_URL="${BASE_URL}/sp500_heatmap_${DATE_NY}.png"
 
           cat > payload.json <<'JSON'
           {
             "text": "S&P 500 Heatmap — For internal use only",
             "attachments": [
-              { "title": "SP500 Heatmap (4:00pm ET)", "image_url": "__HEAT_URL__" }
+              { "title": "SP500 Heatmap (date-stamped)", "image_url": "__HEAT_URL__" }
             ]
           }
           JSON
