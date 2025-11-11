@@ -3,7 +3,7 @@ name: S&P 500 Heatmap (Finviz)
 on:
   # Single trigger, 15 minutes earlier than the old first run (20:15 UTC → 20:00 UTC)
   schedule:
-    - cron: "0 20 * * 1-5"
+    - cron: "0 21 * * 1-5"
   workflow_dispatch:
 
 permissions:
